@@ -2,6 +2,7 @@ import argparse
 import numpy as np
 import logging # logger
 import sys
+import os
 
 import torch
 
@@ -9,16 +10,71 @@ import SCTG.config as config
 import SCTG.inputters.utils as util
 import SCTG.inputters.constants as constants
 
+from main.model import SourceCodeTextGeneration
+
 # init logger
 logger = logging.getLogger()
 
-
+# Just changes Number to String
+# Kilo, Mega, Tera..?
+def human_format(num):
+    num = float('{:.3g}'.format(num))
+    magnitude = 0
+    while abs(num) >= 1000:
+        magnitude += 1
+        num /= 1000.0
+    return '{}{}'.format((num).rstrip('0').rstrip('.'),
+                        ['', 'K', 'M', 'B', 'T'][magnitude])
 
 def set_defaults(args):
+    """make sure commandline args are initialized properly"""
+    # Check critical files exists
+    if not args.only_test:
+        # initialize
+        args.train_src_files = []
+        args.train_tgt_files = []
+        args.train_src_tag_files = []
+
+        """
+        files.add_argument('--dataset_name', nargs='+', type=str, required=True,
+                    help='Name of the experimental dataset')
+        아니 파이썬 String이 들어가는데 이게 왜 Number of dataset이냐. 
+        dataset을 java랑 python 두 개 다 돌릴 수 있어서~
+        """
+        num_dataset = len(args.dataset_name) #['python'] len == 1
+        if num_dataset > 1:
+            # --train_src train/code.${CODE_EXTENSION}
+            if len(args.train_src) == 1:
+                args.train_src = args.train_src * num_dataset
+            if len(args.train_tgt) == 1:
+                args.train_tgt = args.train_tgt * num_dataset
+
     return 0
 
 def add_train_args(parser):
     return 0
+
+def init_from_scratch(args, train_exs, dev_exs):
+    """new model, new data, new dictionary"""
+    logger.info('-' * 100)
+    logger.info('Build word dictionary')
+    
+    src_dict = util.build_word_and_char_dict(args,
+                                            examples=train_exs + dev_exs,
+                                            fields=['code'],
+                                            dict_size=args.src_vocab_size,
+                                            no_special_token=True)
+    tgt_dict = util.build_word_and_char_dict(args,
+                                            examples=train_exs + dev_exs,
+                                            fields=['summary'],
+                                            dict_size=args.tgt_vocab_size,
+                                            no_special_token=True)
+    logger.info('Number of words in source = %d target = %d' % (len(src_dict), len(tgt_dict)))
+
+    # Init model
+    model = SourceCodeTextGeneration(config.get_model_args(args), src_dict, tgt_dict)
+
+    return model
 
 def main(args):
     #### LOAD DATA ####
@@ -89,6 +145,56 @@ def main(args):
     logger.info('Number of dev example = %d' % len(dev_exs))
 
     #### MODEL ####
+    logger.info('-' * 100)
+    start_epoch = 1
+
+    # only test
+    if args.only_test:
+        if args.pretrained:
+            model = SourceCodeTextGeneration.load(args.pretrained)
+        else:
+            if not os.path.isfile(args.model_file):
+                raise IOError('No such file: %s' % args.model_file)
+            model = SourceCodeTextGeneration.load(args.model_file)
+    else:
+        # If argument is set to checkpoint and there is a model
+        if args.checkpoint and os.path.isfile(args.model_file + '.checkpoint'):
+            logger.info('Checkpoint Found')
+            checkpoint_file = args.model_file + '.checkpoint'
+            model, start_epoch = SourceCodeTextGeneration.load_checkpoint(checkpoint_file, args.cuda)
+        else:
+            # If using a pretrained model
+            if args.pretrained:
+                logger.info('Using pretrained model')
+                model = SourceCodeTextGeneration.load(args.pretrained, args)
+            else:
+                logger.info('Training model from scratch')
+                model = init_from_scratch(args, train_exs, dev_exs)
+        
+            # set optimizer
+            model.init_optimizer()
+
+            # log parameter details
+            """
+            03/04/2021 02:50:59 PM: [ Trainable #parameters [encoder-decoder] 44.2M [total] 86M ]
+            """
+            logger.info('Trainable #Parameters [encoder-decoder] {} [total] {}'.format(
+                human_format(model.network.count_encoder_parameters() + 
+                            model.network.count_decoder_parameters()),
+                human_format(model.network.count_parameters())
+            ))
+            table = model.network.layer_wise_parameters()
+            """
+            03/04/2021 02:50:59 PM: [ Breakdown of the trainable paramters ... tables
+            """
+            logger.info('Breakdown of the trainable parameters\n%s' % table)
+
+    # GPU
+    if args.cuda:
+        model.cuda()
+    
+    if args.parallel:
+        model.parallelize()
 
 if __name__ == 'main':
     # For bash argument input
