@@ -23,3 +23,6 @@ class SourceCodeTextGeneration(object):
 
     def parallelize():
         return 0
+
+    def updates(self, examples):
+        return 0
