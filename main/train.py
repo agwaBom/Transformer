@@ -3,6 +3,7 @@ import numpy as np
 import logging # logger
 import sys
 import os
+import subprocess
 
 import torch
 
@@ -48,6 +49,106 @@ def set_defaults(args):
                 args.train_src = args.train_src * num_dataset
             if len(args.train_tgt) == 1:
                 args.train_tgt = args.train_tgt * num_dataset
+            if len(args.train_src_tag) == 1:
+                args.train_src_tag = args.train_src_tag * num_dataset
+        
+        # one(either one of lang) or two(both)
+        for i in range(num_dataset):
+            # get dataset name (python || java)
+            dataset_name = args.dataset_name[i]
+            # data_dir : /data/python
+            data_dir = os.path.join(args.data_dir, dataset_name)
+            # train_src : train/code.${CODE_EXTENSION}
+            train_src = os.path.join(data_dir, args.train_src[i])
+            train_tgt = os.path.join(data_dir, args.train_tgt[i])
+            
+            # IO Exception handling
+            if not os.path.isfile(train_src):
+                raise IOError('No such file %s' % train_src)
+            if not os.path.isfile(train_tgt):
+                raise IOError('No such file %s' % train_tgt)
+            """
+            data.add_argument('--use_code_type', type='bool', default=False,
+                              help='Use code type as additional feature for feature representations')
+            """
+            if args.use_code_type:
+                train_src_tag = os.path.join(data_dir, args.train_src_tag[i])
+                if not os.path.isfile(train_src_tag):
+                    raise IOError('No such file: %s' % train_src_tag)
+            else:
+                train_src_tag = None
+            # append source and target data path
+            args.train_src_files.append(train_src)
+            args.train_tgt_files.append(train_tgt)
+            args.train_src_tag_files.append(train_src_tag)
+
+            """
+            files.add_argument('--dev_src_tag', nargs='+', type=str,
+                                help='Preprocessed dev source tag file')
+            그니까 이거 필수 아니라서 안쓰인거임... 그냥 안쓴거였음..
+            """
+
+            """
+            "dev_src_files": [
+                "../../data/python/dev/code.original_subtoken"
+            ],
+            "dev_tgt_files": [
+                "../../data/python/dev/javadoc.original"
+            ],
+            "dev_src_tag": null,
+            "dev_src_tag_files": [
+                null
+            ],            
+            """
+            args.dev_src_files = []
+            args.dev_tgt_files = []
+            args.dev_src_tag_files = []
+
+            num_dataset = len(args.dataset_name)
+            if num_dataset > 1:
+                if len(args.dev_src) == 1:
+                    args.dev_src = args.dev_src * num_dataset
+                if len(args.dev_tgt) == 1:
+                    args.dev_tgt = args.dev_tgt * num_dataset
+                if len(args.dev_src_tag) == 1:
+                    args.dev_src_tag = args.dev_src_tag * num_dataset
+            
+            for i in range(num_dataset):
+                dataset_name = args.dataset_name[i]
+                data_dir = os.path.join(args.data_dir, dataset_name)
+                dev_src = os.path.join(data_dir, args.dev_src[i])
+                dev_tgt = os.path.join(data_dir, args.dev_tgt[i])
+                if not os.path.isfile(dev_src):
+                    raise IOError('No such file %s' % dev_src)
+                if not os.path.isfile(dev_tgt):
+                    raise IOError('No such file %s' % dev_tgt)
+                # 여기선 안쓰는거..
+                if args.use_code_type:
+                    dev_src_tag = os.path.join(data_dir, args.dev_src_tag[i])
+                    if not os.path.isfile(dev_src_tag):
+                        raise IOError('No such file: %s' % dev_src_tag)
+                else:
+                    dev_src_tag = None
+                
+                args.dev_src_files.append(dev_src)
+                args.dev_tgt_files.append(dev_tgt)
+                args.dev_src_tag_files.append(dev_src_tag)
+    # model_dir": "../../tmp",
+    # Make model directory
+    subprocess.call(['mkdir', '-p', args.model_dir])
+
+    suffix = '_test' if args.only_test else ''
+
+    args.model_file = os.path.join(args.model_dir, args.model_name + '.mdl')
+    args.log_file = os.path.join(args.model_dir, args.model_name + suffix + '.txt')
+    args.pred_file = os.path.join(args.model_dir, args.model_name + suffix + '.json')
+
+    if args.pretrained:
+        args.pretrained = os.path.join(args.model_dir, args.pretrained + '.mdl')
+
+    if not args.model_name:
+        import time
+        args.model_name = time.strftime("%Y%m%d-%H:%M:%S")
 
     return 0
 
