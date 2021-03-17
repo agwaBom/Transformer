@@ -5,6 +5,7 @@ import sys
 import os
 import subprocess
 import json
+from numpy.lib.utils import source
 
 import torch
 # 상태 바
@@ -323,8 +324,85 @@ def train(args, data_loader, model, global_stats):
     if args.checkpoint:
         model.checkpoint(args.model_file + '.checkpoint', current_epoch + 1)
 
+# train_loader & valid_loader getting in to data_loader
 def validate_official(args, data_loader, model, global_stats, mode='valid'):
-    return 0
+    eval_time = Timer()
+    examples = 0
+    sources, hypotheses, references, copy_dict = dict(), dict(), dict(), dict()
+
+    with torch.no_grad():
+        process_bar = tqdm(data_loader)
+        # loop data_loader
+        for i, example in enumerate(process_bar):
+            batch_size = example['batch_size']
+            # make space for example
+            example_index = list(range(i * batch_size, (i * batch_size) + batch_size))
+            # replace_unk: replace `unk` tokens while generating predictions
+            predictions, targets, copy_info = model.predict(example, replace_unk=True)
+
+            src_sequences = [code for code in example['code_test']]
+
+            example += batch_size
+
+            # [model prediction], [answer], [test set] 
+            for i, src, pred, tgt in zip(example_index, src_sequences, predictions, targets):
+                hypotheses[i] = [pred]
+                references[i] = tgt if isinstance(tgt, list) else [tgt]
+                sources[i] = src
+            
+            # copy_info is coming from model.prediction() maybe i should debug what actually is it...
+            if copy_info is not None:
+                copy_info = copy_info.cpu().numpy().astype(int).tolist()
+                for i, copy in zip(example_index, copy_info):
+                    copy_dict[i] = copy
+
+            process_bar.set_description("%s" % 'Epoch = %d [validating ... ]' % global_stats['epoch'])
+
+    copy_dict = None if len(copy_dict) == 0 else copy_dict
+
+    # evaluate based on [model prediction], [answer], [test set]
+    # mode랑 filename은 이따 차자바
+
+    bleu, rouge_l, meteor, precision, recall, f1 = eval_accuracies(hypotheses,
+                                                                   references,
+                                                                   copy_dict,
+                                                                   sources=sources,
+                                                                   filename=args.pred_file,
+                                                                   print_copy_info=args.print_copy_info,
+                                                                   mode=mode)
+    result = dict()
+    result['bleu'] = bleu
+    result['rouge_l'] = rouge_l
+    result['meteor'] = meteor
+    result['precision'] = precision
+    result['recall'] = recall
+    result['f1'] = f1
+
+    if mode == 'test':
+        logger.info('test valid official: '
+                    'bleu = %.2f | rouge_l = %.2f | meteor = %.2f | ' %
+                    (bleu, rouge_l, meteor) +
+                    'Precision = %.2f | Recall = %.2f | F1 = %.2f | '
+                    'examples = %d | ' %
+                    (precision, recall, f1, examples) +
+                    'test time = %.2f (s)' % eval_time.time())
+    else:
+        logger.info('validation set valid official: Epoch = %d | ' %
+                    (global_stats['epoch']) +
+                    'bleu = %.2f | rouge_l = %.2f | '
+                    'Precision = %.2f | Recall = %.2f | F1 = %.2f | examples = %d | ' %
+                    (bleu, rouge_l, precision, recall, f1, examples) +
+                    'valid time = %.2f (s)' % eval_time.time())
+    
+    return result
+
+def normalize_answer(s):
+    """Lower text and remove extra whitespace"""
+
+    def white_space_fix(text):
+        return ' '.join(text.split())
+
+    return white_space_fix(s.lower())
 
 def main(args):
     #### LOAD DATA ####
@@ -456,6 +534,14 @@ def main(args):
     if not args.only_test:
         # PyTorch dataset class for SQuAD (and SQuAD-like) data.
         # Stanford Question Answering Dataset
+        """
+        train_files = dict()
+        train_files['src'] = train_src
+        train_files['src_tag'] = train_src_tag
+        train_files['tgt'] = train_tgt
+        """
+        # train_files -> train_examples -> train_dataset -> train_loader
+        #                train_examples -> src_dict & tgt_dict
         train_dataset = data.CommentDataset(train_examples, model)
         # "sort_by_len": true,
         if args.sort_by_len:
@@ -469,6 +555,7 @@ def main(args):
         
         """Gather a batch of individual examples into one batch."""
         # 아마 이쪽은 torch의 기능이라 documentation을 좀 봐야할듯?
+        # train_dataset -> train_loader
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=args.batch_size,
