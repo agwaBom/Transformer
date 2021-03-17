@@ -73,12 +73,12 @@ def add_train_args(parser):
                        help='Preprocessed train source tag file')
     files.add_argument('--train_tgt', nargs='+', type=str,
                        help='Preprocessed train target file')
-    files.add_argument('--dev_src', nargs='+', type=str, required=True,
-                       help='Preprocessed dev source file')
-    files.add_argument('--dev_src_tag', nargs='+', type=str,
-                       help='Preprocessed dev source tag file')
-    files.add_argument('--dev_tgt', nargs='+', type=str, required=True,
-                       help='Preprocessed dev target file')
+    files.add_argument('--valid_src', nargs='+', type=str, required=True,
+                       help='Preprocessed valid source file')
+    files.add_argument('--valid_src_tag', nargs='+', type=str,
+                       help='Preprocessed valid source tag file')
+    files.add_argument('--valid_tgt', nargs='+', type=str, required=True,
+                       help='Preprocessed valid target file')
 
     # Saving + loading
     save_load = parser.add_argument_group('Saving/Loading')
@@ -192,39 +192,39 @@ def set_defaults(args):
                 null
             ],            
             """
-            args.dev_src_files = []
-            args.dev_tgt_files = []
-            args.dev_src_tag_files = []
+            args.valid_src_files = []
+            args.valid_tgt_files = []
+            args.valid_src_tag_files = []
 
             num_dataset = len(args.dataset_name)
             if num_dataset > 1:
-                if len(args.dev_src) == 1:
-                    args.dev_src = args.dev_src * num_dataset
-                if len(args.dev_tgt) == 1:
-                    args.dev_tgt = args.dev_tgt * num_dataset
-                if len(args.dev_src_tag) == 1:
-                    args.dev_src_tag = args.dev_src_tag * num_dataset
+                if len(args.valid_src) == 1:
+                    args.valid_src = args.valid_src * num_dataset
+                if len(args.valid_tgt) == 1:
+                    args.valid_tgt = args.valid_tgt * num_dataset
+                if len(args.valid_src_tag) == 1:
+                    args.valid_src_tag = args.valid_src_tag * num_dataset
             
             for i in range(num_dataset):
                 dataset_name = args.dataset_name[i]
                 data_dir = os.path.join(args.data_dir, dataset_name)
-                dev_src = os.path.join(data_dir, args.dev_src[i])
-                dev_tgt = os.path.join(data_dir, args.dev_tgt[i])
-                if not os.path.isfile(dev_src):
-                    raise IOError('No such file %s' % dev_src)
-                if not os.path.isfile(dev_tgt):
-                    raise IOError('No such file %s' % dev_tgt)
+                valid_src = os.path.join(data_dir, args.valid_src[i])
+                valid_tgt = os.path.join(data_dir, args.valid_tgt[i])
+                if not os.path.isfile(valid_src):
+                    raise IOError('No such file %s' % valid_src)
+                if not os.path.isfile(valid_tgt):
+                    raise IOError('No such file %s' % valid_tgt)
                 # 여기선 안쓰는거..
                 if args.use_code_type:
-                    dev_src_tag = os.path.join(data_dir, args.dev_src_tag[i])
-                    if not os.path.isfile(dev_src_tag):
-                        raise IOError('No such file: %s' % dev_src_tag)
+                    valid_src_tag = os.path.join(data_dir, args.valid_src_tag[i])
+                    if not os.path.isfile(valid_src_tag):
+                        raise IOError('No such file: %s' % valid_src_tag)
                 else:
-                    dev_src_tag = None
+                    valid_src_tag = None
                 
-                args.dev_src_files.append(dev_src)
-                args.dev_tgt_files.append(dev_tgt)
-                args.dev_src_tag_files.append(dev_src_tag)
+                args.valid_src_files.append(valid_src)
+                args.valid_tgt_files.append(valid_tgt)
+                args.valid_src_tag_files.append(valid_src_tag)
     # model_dir": "../../tmp",
     # Make model directory
     subprocess.call(['mkdir', '-p', args.model_dir])
@@ -258,18 +258,18 @@ def set_defaults(args):
     
     return args
 
-def init_from_scratch(args, train_examples, dev_examples):
+def init_from_scratch(args, train_examples, valid_examples):
     """new model, new data, new dictionary"""
     logger.info('-' * 100)
     logger.info('Build word dictionary')
     
     src_dict = util.build_word_and_char_dict(args,
-                                            examples=train_examples + dev_examples,
+                                            examples=train_examples + valid_examples,
                                             fields=['code'],
                                             dict_size=args.src_vocab_size,
                                             no_special_token=True)
     tgt_dict = util.build_word_and_char_dict(args,
-                                            examples=train_examples + dev_examples,
+                                            examples=train_examples + valid_examples,
                                             fields=['summary'],
                                             dict_size=args.tgt_vocab_size,
                                             no_special_token=True)
@@ -323,7 +323,7 @@ def train(args, data_loader, model, global_stats):
     if args.checkpoint:
         model.checkpoint(args.model_file + '.checkpoint', current_epoch + 1)
 
-def validate_official(args, data_loader, model, global_stats, mode='dev'):
+def validate_official(args, data_loader, model, global_stats, mode='valid'):
     return 0
 
 def main(args):
@@ -375,24 +375,24 @@ def main(args):
             args.dataset_weights[lang_id] = round(weight, 2)
         logger.info('Dataset weights = %s' % str(args.dataset_weights))
 
-    dev_examples = []
-    for dev_src, dev_src_tag, dev_tgt, dataset_name in \
-        zip(args.dev_src_files, args.dev_src_tag_files,
-            args.dev_tgt_files, args.dataset_name):
-        dev_files = dict()
-        dev_files['src'] = dev_src
-        dev_files['src_tag'] = dev_src_tag
-        dev_files['tgt'] = dev_tgt
+    valid_examples = []
+    for valid_src, valid_src_tag, valid_tgt, dataset_name in \
+        zip(args.valid_src_files, args.valid_src_tag_files,
+            args.valid_tgt_files, args.dataset_name):
+        valid_files = dict()
+        valid_files['src'] = valid_src
+        valid_files['src_tag'] = valid_src_tag
+        valid_files['tgt'] = valid_tgt
         example = util.load_data(args,
-                            dev_files,
+                            valid_files,
                             max_examples=args.max_examples,
                             dataset_name=dataset_name,
                             test_split=True)
-        dev_examples.extend(example)
+        valid_examples.extend(example)
     """
     03/04/2021 02:50:55 PM: [ Num dev examples = 18505 ]
     """
-    logger.info('Number of dev example = %d' % len(dev_examples))
+    logger.info('Number of dev example = %d' % len(valid_examples))
 
     #### MODEL ####
     logger.info('-' * 100)
@@ -419,7 +419,7 @@ def main(args):
                 model = SourceCodeTextGeneration.load(args.pretrained, args)
             else:
                 logger.info('Training model from scratch')
-                model = init_from_scratch(args, train_examples, dev_examples)
+                model = init_from_scratch(args, train_examples, valid_examples)
         
             # set optimizer
             model.init_optimizer()
@@ -479,14 +479,14 @@ def main(args):
             drop_last=args.parallel
         )
 
-        # 왜 dev 데이터 셋에는 SequentialSampler을 넣는거지????
-        dev_dataset = data.CommentDataset(dev_examples, model)
-        dev_sampler = torch.utils.data.sampler.SequentialSampler(dev_dataset)
+        # 왜 valid 데이터 셋에는 SequentialSampler을 넣는거지????
+        valid_dataset = data.CommentDataset(valid_examples, model)
+        valid_sampler = torch.utils.data.sampler.SequentialSampler(valid_dataset)
 
-        dev_loader = torch.utils.data.DataLoader(
-            dev_dataset,
+        valid_loader = torch.utils.data.DataLoader(
+            valid_dataset,
             batch_size=args.test_batch_size,
-            sampler=dev_sampler,
+            sampler=valid_sampler,
             num_workers=args.data_workers,
             collate_fn=vector.batchify,
             pin_memory=args.cuda,
@@ -504,7 +504,7 @@ def main(args):
                 'epoch': 0,
                 'best_valid': 0,
                 'no_improvement': 0}
-        validate_official(args, dev_loader, model, stats, mode='test')
+        validate_official(args, valid_loader, model, stats, mode='test')
 
     #### Train/Valid Loop ####
     else:
@@ -533,7 +533,7 @@ def main(args):
                     model.optimizer.param_groups[0]['lr'] * args.lr_decay
                 
             train(args, train_loader, model, stats)
-            result = validate_official(args, dev_loader, model, stats)
+            result = validate_official(args, valid_loader, model, stats)
 
             # Save Best validation
             # 03/04/2021 02:58:31 PM: [ Best valid: bleu = 4.44 (epoch 1, 1736 updates) ]
@@ -595,7 +595,7 @@ if __name__ == 'main':
             logfile = logging.FileHandler(args.log_file, 'w')
         logger.addHandler(logfile)
     """
-    03/04/2021 02:50:51 PM: [ COMMAND: ../../main/train.py --data_workers 5 --dataset_name python --data_dir ../../data/ --model_dir ../../tmp --model_name code2jdoc --train_src train/code.original_subtoken --train_tgt train/javadoc.original --dev_src dev/code.original_subtoken --dev_tgt dev/javadoc.original --uncase True --use_src_word True --use_src_char False --use_tgt_word True --use_tgt_char False --max_src_len 400 --max_tgt_len 30 --emsize 512 --fix_embeddings False --src_vocab_size 50000 --tgt_vocab_size 30000 --share_decoder_embeddings True --max_examples -1 --batch_size 32 --test_batch_size 64 --num_epochs 200 --model_type transformer --num_head 8 --d_k 64 --d_v 64 --d_ff 2048 --src_pos_emb False --tgt_pos_emb True --max_relative_pos 32 --use_neg_dist True --nlayers 6 --trans_drop 0.2 --dropout_emb 0.2 --dropout 0.2 --copy_attn True --early_stop 20 --warmup_steps 0 --optimizer adam --learning_rate 0.0001 --lr_decay 0.99 --valid_metric bleu --checkpoint True ]
+    03/04/2021 02:50:51 PM: [ COMMAND: ../../main/train.py --data_workers 5 --dataset_name python --data_dir ../../data/ --model_dir ../../tmp --model_name code2jdoc --train_src train/code.original_subtoken --train_tgt train/javadoc.original --valid_src valid/code.original_subtoken --valid_tgt valid/javadoc.original --uncase True --use_src_word True --use_src_char False --use_tgt_word True --use_tgt_char False --max_src_len 400 --max_tgt_len 30 --emsize 512 --fix_embeddings False --src_vocab_size 50000 --tgt_vocab_size 30000 --share_decoder_embeddings True --max_examples -1 --batch_size 32 --test_batch_size 64 --num_epochs 200 --model_type transformer --num_head 8 --d_k 64 --d_v 64 --d_ff 2048 --src_pos_emb False --tgt_pos_emb True --max_relative_pos 32 --use_neg_dist True --nlayers 6 --trans_drop 0.2 --dropout_emb 0.2 --dropout 0.2 --copy_attn True --early_stop 20 --warmup_steps 0 --optimizer adam --learning_rate 0.0001 --lr_decay 0.99 --valid_metric bleu --checkpoint True ]
     """
     logger.info('COMMAND: %s' % ' '.join(sys.argv))
 
