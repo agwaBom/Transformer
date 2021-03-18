@@ -4,8 +4,8 @@ import string
 from collections import Counter
 from tqdm import tqdm
 
-import SCTG.objects.code as Code
-import SCTG.objects.summary as Summary
+from SCTG.objects.code import Code
+from SCTG.objects.summary import Summary
 from SCTG.inputters.vocabulary import Vocabulary, UnicodeCharsVocabulary
 from SCTG.inputters.constants import BOS_WORD, EOS_WORD, PAD_WORD, \
     UNK_WORD, TOKEN_TYPE_MAP, AST_TYPE_MAP, DATA_LANG_MAP, LANG_ID_MAP
