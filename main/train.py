@@ -7,6 +7,10 @@ import subprocess
 import json
 from numpy.lib.utils import source
 
+# OrderedDict - dictionary that rememebers order
+# Counter - notebook 참고.
+from collections import OrderedDict, Counter
+
 import torch
 # 상태 바
 from tqdm import tqdm
@@ -19,6 +23,10 @@ import SCTG.inputters.vector as vector
 from SCTG.inputters.timer import AverageMeter, Timer
 
 from main.model import SourceCodeTextGeneration
+
+from SCTG.eval.bleu.google_bleu import corpus_bleu
+from SCTG.eval.rouge.rouge import Rouge
+from SCTG.eval.meteor.meteor import Meteor
 
 # init logger
 logger = logging.getLogger()
@@ -313,12 +321,12 @@ def train(args, data_loader, model, global_stats):
         perplexity.update(net_loss['perplexity'], batch_size)
 
         # print status with tqdm
-        log_info = 'Epoch = %d [perplexity = %.2f, ml_loss = %.2f]' % (current_epoch, perplexity.average, ml_loss.average)
+        log_info = 'Epoch = %d [perplexity = %.2f, ml_loss = %.2f]' % (current_epoch, perplexity.avg, ml_loss.avg)
         process_bar.set_description("%s" % log_info)
 
     logger.info('train: Epoch %d | perplexity = %.2f | ml_loss = %.2f | '
                 'Time for epoch = %.2f (s)' %
-                (current_epoch, perplexity.average, ml_loss.average, epoch_time.time()))
+                (current_epoch, perplexity.avg, ml_loss.avg, epoch_time.time()))
     
     # Checkpoint
     if args.checkpoint:
@@ -328,7 +336,7 @@ def train(args, data_loader, model, global_stats):
 def validate_official(args, data_loader, model, global_stats, mode='valid'):
     eval_time = Timer()
     examples = 0
-    sources, hypotheses, references, copy_dict = dict(), dict(), dict(), dict()
+    source_list, hypothesis_list, reference_list, copy_dict = dict(), dict(), dict(), dict()
 
     with torch.no_grad():
         process_bar = tqdm(data_loader)
@@ -338,6 +346,7 @@ def validate_official(args, data_loader, model, global_stats, mode='valid'):
             # make space for example
             example_index = list(range(i * batch_size, (i * batch_size) + batch_size))
             # replace_unk: replace `unk` tokens while generating predictions
+            # predictions is list of sentences model predicted
             predictions, targets, copy_info = model.predict(example, replace_unk=True)
 
             src_sequences = [code for code in example['code_test']]
@@ -346,9 +355,9 @@ def validate_official(args, data_loader, model, global_stats, mode='valid'):
 
             # [model prediction], [answer], [test set] 
             for i, src, pred, tgt in zip(example_index, src_sequences, predictions, targets):
-                hypotheses[i] = [pred]
-                references[i] = tgt if isinstance(tgt, list) else [tgt]
-                sources[i] = src
+                hypothesis_list[i] = [pred]
+                reference_list[i] = tgt if isinstance(tgt, list) else [tgt]
+                source_list[i] = src
             
             # copy_info is coming from model.prediction() maybe i should debug what actually is it...
             if copy_info is not None:
@@ -363,10 +372,10 @@ def validate_official(args, data_loader, model, global_stats, mode='valid'):
     # evaluate based on [model prediction], [answer], [test set]
     # mode랑 filename은 이따 차자바
 
-    bleu, rouge_l, meteor, precision, recall, f1 = eval_accuracies(hypotheses,
-                                                                   references,
+    bleu, rouge_l, meteor, precision, recall, f1 = eval_accuracies(hypothesis_list,
+                                                                   reference_list,
                                                                    copy_dict,
-                                                                   sources=sources,
+                                                                   source_list=source_list,
                                                                    filename=args.pred_file,
                                                                    print_copy_info=args.print_copy_info,
                                                                    mode=mode)
@@ -398,11 +407,136 @@ def validate_official(args, data_loader, model, global_stats, mode='valid'):
 
 def normalize_answer(s):
     """Lower text and remove extra whitespace"""
-
     def white_space_fix(text):
         return ' '.join(text.split())
-
     return white_space_fix(s.lower())
+
+def eval_score(prediction, ground_truth):
+    # True - 모델이 실제로 맞춤, False - 모델이 틀림
+    # Positive - 맞다고 예측, Negative - 틀렸다고 예측
+
+    # Precision = TP / TP + FP
+    # Recall    = TP / TP + FN
+    # F1        = Precision * Recall / Precision + Recall
+    precision, recall, f1 = 0, 0, 0
+
+    # if there is no ground truth
+    if len(ground_truth) == 0:
+        if len(prediction) == 0:
+            precision, recall, f1 = 1, 1, 1
+    else:
+        prediction_tokens = normalize_answer(prediction).split()
+        ground_truth_tokens = normalize_answer(ground_truth).split()
+        # common = if both token has same alphabet it gets in
+        # token 단위가 단어라면 단어가 맞아야지만 들어가겠지?
+        common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
+        # 총 몇 개를 맞췄냐.
+        num_same = sum(common.values())
+
+        if num_same != 0:
+            # 맞다고 예측한 것들중 실제 맞은거
+            precision = 1.0 * num_same / len(prediction_tokens)
+            # 실제 정답이 True인 것중 모델이 얼마나 맞췄냐.
+            recall = 1.0 * num_same / len(ground_truth_tokens)
+            # 왜 2를 곱했는지...
+            f1 = (2 * precision * recall) / (precision + recall)
+    return precision, recall, f1
+
+def compute_eval_score(prediction, ground_truth_list):
+    assert isinstance(prediction, str)
+    precision, recall, f1 = 0, 0, 0
+    for ground_truth in ground_truth_list:
+        _precision, _recall, _f1 = eval_score(prediction, ground_truth)
+        # 이전 f1보다 새 f1이 더 크면 다 갈아 엎어!!!
+        if _f1 > f1:
+            precision, recall, f1 = _precision, _recall, _f1
+    return precision, recall, f1
+
+# 여기가 메인 evaluation
+def eval_accuracies(hypothesis_list, reference_list, copy_info, source_list=None, filename=None, print_copy_info=False, mode='valid'):
+    """An unofficial evalutation helper.
+     Arguments:
+        hypothese_list: A mapping from instance id to predicted sequences.
+        reference_list: A mapping from instance id to ground truth sequences.
+        copy_info: Map of id --> copy information.
+        sources: Map of id --> input text sequence.
+        filename:
+        print_copy_info:
+    """
+    # same elements should be there
+    assert(sorted(reference_list.keys()) == sorted(hypothesis_list.keys()))
+
+    # Compute BLEU scores
+    # bleu_scorer = Bleu(n=4)
+    # _, _, bleu = bleu_scorer.compute_score(references, hypotheses, verbose=0)
+    # bleu = compute_bleu(references, hypotheses, max_order=4)['bleu']
+    # _, bleu, ind_bleu = nltk_corpus_bleu(hypotheses, references)
+
+    # 폴더 채로 import해서 google bleu로 계산했네
+    # corpus_bleu(hypotheses, references) -> return corpus_bleu, avg_score, ind_score
+    _, bleu, ind_bleu = corpus_bleu(hypothesis_list, reference_list)
+
+    # Compute ROGUE
+    rouge_l, ind_rouge = Rouge().compute_score(reference_list, hypothesis_list)
+
+    # Compute METEOR
+    if mode == 'test':
+        meteor, _ = Meteor().compute_score(reference_list, hypothesis_list)
+    else:
+        meteor = 0
+
+    f1 = AverageMeter()
+    precision = AverageMeter()
+    recall = AverageMeter()
+    """
+    Make JSON File like below...
+    {
+        "id": 0, 
+        "code": "def reorder suite suite classes reverse False class count len classes suite class type suite bins [ Ordered Set for i in range class count + 1 ]partition suite by type suite classes bins reverse reverse reordered suite suite class for i in range class count + 1 reordered suite add Tests bins[i] return reordered suite", 
+        "predictions": ["reorder a suite from a list of tests ."], 
+        "references": ["reorders a test suite by test type ."], 
+        "bleu": 0.16784459625186196, 
+        "rouge_l": 0.35672514619883033
+    }
+    """
+    json_file = open(filename, 'w') if filename else None
+
+    # reference key를 기준으로 hypothesis list를 불러옴
+    for key in reference_list.keys():
+        _precision, _recall, _f1 = compute_eval_score(hypothesis_list[key][0],
+                                                      reference_list[key])
+        precision.update(_precision)
+        recall.update(_recall)
+        f1.update(_f1)
+
+        if json_file:
+            # initial setting is "print_copy_info == false" so have to try that.
+            if copy_info is not None and print_copy_info:
+                prediction = hypothesis_list[key][0].split()
+                pred_i = [word + ' [' + str(copy_info[key][j]) + ']' for j, word in enumerate(prediction)]
+                pred_i = [' '.join(pred_i)]
+            else : 
+                pred_i = hypothesis_list[key]
+            
+            log_object = OrderedDict()
+            log_object['id'] = key
+            if source_list is not None:
+                log_object['code'] = source_list[key]
+            log_object['prediction_list'] = pred_i
+            log_object['reference_list'] = reference_list[key][0] if args.print_one_target else reference_list[key]
+            log_object['bleu'] = ind_bleu[key]
+            log_object['rouge_l'] = ind_rouge[key]
+
+            json_file.write(json.dumps(log_object) + '\n')
+    
+    if json_file: json_file.close()
+    return bleu * 100, rouge_l * 100, meteor * 100, precision.avg * 100, recall.avg * 100, f1.avg * 100
+            
+
+
+
+
+    return 0
 
 def main(args):
     #### LOAD DATA ####
