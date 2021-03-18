@@ -17,7 +17,7 @@ from SCTG.utils.misc import tens2sen, count_file_lines
 logger = logging.getLogger(__name__)
 
 
-class Code2NaturalLanguage(object):
+class SourceCodeTextGeneration(object):
     """High level model that handles intializing the underlying network
     architecture, saving, updating examples, and predicting examples.
     """
@@ -326,7 +326,7 @@ class Code2NaturalLanguage(object):
         args = saved_params['args']
         if new_args:
             args = override_model_args(args, new_args)
-        return Code2NaturalLanguage(args, src_dict, tgt_dict, state_dict)
+        return SourceCodeTextGeneration(args, src_dict, tgt_dict, state_dict)
 
     @staticmethod
     def load_checkpoint(filename, use_gpu=True):
@@ -341,7 +341,7 @@ class Code2NaturalLanguage(object):
         updates = saved_params['updates']
         optimizer = saved_params['optimizer']
         args = saved_params['args']
-        model = Code2NaturalLanguage(args, src_dict, tgt_dict, state_dict)
+        model = SourceCodeTextGeneration(args, src_dict, tgt_dict, state_dict)
         model.updates = updates
         model.init_optimizer(optimizer, use_gpu)
         return model, epoch
