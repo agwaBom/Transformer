@@ -3,6 +3,8 @@ import numpy as np
 import logging # logger
 import sys
 import os
+
+os.environ["CUDA_VISIBLE_DEVICES"]="2"
 import subprocess
 import json
 from numpy.lib.utils import source
