@@ -1,13 +1,21 @@
+from torch.serialization import save
+from SCTG.utils.misc import tens2sen
 from numpy.lib.utils import source
+import logging
 import torch
 import torch.optim
 import torch.nn
 import math
+import copy
 
+from SCTG.config import override_model_args
 from SCTG.models.transformer import Transformer
 
 # Copy attention
 from SCTG.utils.copy_utils import collapse_copy_scores, replace_unknown, make_src_map, align
+
+
+logger = logging.getLogger(__name__)
 
 """
 Not support
@@ -370,22 +378,250 @@ class SourceCodeTextGeneration(object):
 
     ####Prediction####
     def predict(self, example, replace_unk=False):
-        return 0
+        """Forward a batch of examples only to get predictions"""
+        
+        # Set to evaluation mode
+        """
+        Remember that you must call model.eval() to set dropout and batch normalization layers to evaluation mode before running inference. 
+        Failing to do this will yield inconsistent inference results.
+        https://pytorch.org/tutorials/beginner/saving_loading_models.html?highlight=eval
+        """
+        self.network.eval()
+
+        source_map, alignment = None, None
+        blank, fill = None, None,
+
+        # collect Source_map and Alignment info to enable Copy Attention.
+        if self.args.copy_attn:
+            assert 'src_map' in example and 'alignment' in example
+
+            source_map = make_src_map(example['src_map'])
+            source_map = source_map.cuda(non_blocking=True) if self.use_cuda else source_map
+
+            # Given scores from an expanded dictionary corresponding to a batch, sums together copies, with a dictionary word when it is ambiguous.
+            blank, fill = collapse_copy_scores(self.tgt_dict, example['src_vocab'])
+        
+        code_word_rep = example['code_word_rep']
+        code_char_rep = example['code_char_rep']
+        code_type_rep = example['code_type_rep']
+        code_mask_rep = example['code_mask_rep']
+        code_len = example['code_len']
+
+        if self.use_cuda:
+            code_len = code_len.cuda(non_blocking=True)
+            if code_word_rep is not None:
+                code_word_rep = code_word_rep.cuda(non_blocking=True)
+            if code_type_rep is not None:
+                code_type_rep = code_type_rep.cuda(non_blocking=True)
+            if code_char_rep is not None:
+                code_char_rep = code_char_rep.cuda(non_blocking=True)
+            if code_mask_rep is not None:
+                code_mask_rep = code_mask_rep.cuda(non_blocking=True)
+
+        decoder_out = self.network(code_word_rep=code_word_rep,
+                                   code_char_rep=code_char_rep,
+                                   code_type_rep=code_type_rep,
+                                   code_len=code_len,
+                                   summ_word_rep=None,
+                                   summ_char_rep=None,
+                                   summ_len=None,
+                                   tgt_seq=None,
+                                   src_map=source_map,
+                                   alignment=alignment,
+                                   max_len=self.args.max_tgt_len,
+                                   src_dict=self.src_dict,
+                                   tgt_dict=self.tgt_dict,
+                                   blank=blank,
+                                   fill=fill,
+                                   source_vocab=example['src_vocab'],
+                                   code_mask_rep=code_mask_rep)
+        """
+        {
+            'attentions': tensor([[[[0.0195, 0...='cuda:0'), 
+            'copy_info': tensor([[0., 0., 0.,...='cuda:0'), 
+            'memory_bank': tensor([[[ 7.1205e-0...='cuda:0'), 
+            'predictions': tensor([[21931,  5948, 16910,  ..., 14556, 14556, 19078],        
+                                  [16498, 19078, 22332,  ..., 14556, 14556, 19078],        
+                                  [15158,  5948, 16498,  ..., 14556, 14556, 19078],
+                                          ...,        
+                                  [16498, 19078, 14556,  ..., 14556, 14556, 19078],        
+                                  [16498, 19078, 21640,  ..., 14556, 14556, 19078],        
+                                  [16498, 19078, 14556,  ..., 14556, 14556, 19078]], 
+                                  device='cuda:0')
+        }
+
+        'tgt_dict':<SCTG.inputters.vocabulary.UnicodeCharsVocabulary object at 0x7fdfd9940cf8>
+        'src_vocab':[<SCTG.inputters.vocabulary.Vocabulary object at 0x7fdfaaabe9e8>, <SCTG.inputters.voca...faaabeb00>, <SCTG.inputters.voca...faaabeb38>, <SCTG.inputters.voca...faaabeb70>, <SCTG.inputters.voca...faaabeba8>, <SCTG.inputters.voca...faaabebe0>, <SCTG.inputters.voca...faaabec18>, <SCTG.inputters.voca...faaabec50>, <SCTG.inputters.voca...faaabec88>, <SCTG.inputters.voca...faaabecc0>, <SCTG.inputters.voca...faaabecf8>, <SCTG.inputters.voca...faaabed30>, <SCTG.inputters.voca...faaabed68>, <SCTG.inputters.voca...faaabeda0>, ...]
+        """
+        predictions = tens2sen(decoder_out['predictions'],
+                                self.tgt_dict,
+                                example['src_vocab'])
+        """
+        example:
+
+        'ids':[None, None, None, None, None, None, None, None, None, None, None, None, None, None, ...] len():20
+        'stype':[None, None, None, None, None, None, None, None, None, None, None, None, None, None, ...]
+        'alignment':[tensor([ 1,  1,  1, ...,  1,  1]), tensor([1, 1, 1, 3, ... 1, 1, 1]), tensor([ 1,  3,  1, ...,  1,  1]), tensor([1, 1, 1, 4, ... 1, 1, 1]), tensor([ 1,  3,  1, ...,  1,  1]), tensor([ 1,  3, 30, ...,  1,  1]), tensor([1, 3, 7, 8, ... 4, 1, 1]), tensor([1, 1, 1, 1, ... 1, 1, 1]), tensor([1, 1, 3, 4, ... 1, 1, 1]), tensor([1, 1, 1, 1, ... 1, 1, 1]), tensor([1, 3, 1, 1, ... 4, 1, 1]), tensor([1, 3, 1, 4, ... 1, 1, 1]), tensor([ 1,  3,  1, ...,  1,  1]), tensor([ 1, 24,  1, ...,  1,  1]), ...]
+        'src_map':[tensor([ 2,  3,  4, ...  24,  4]), tensor([ 2,  3,  4, ...,  6, 12]), tensor([ 2,  3,  4, ..., 24, 25]), tensor([ 2,  3,  4, ...   6,  4]), tensor([ 2,  3,  4, ..., 15, 16]), tensor([ 2,  3,  4, ..., 59, 54]), tensor([ 2,  3,  4, ...,  7, 15]), tensor([ 2,  3,  4, ..., 22, 23]), tensor([ 2,  3,  4, ..., 22,  3]), tensor([ 2,  3,  4, ...,  5,  6]), tensor([ 2,  3,  4, ..., 14, 15]), tensor([ 2,  3,  4, ..., 34, 42]), tensor([ 2,  3,  4, ..., 22, 23]), tensor([ 2,  3,  4, ..., 53, 54]), ...]
+        'src_vocab': [<SCTG.inputters.voca...faaabe9e8> == {idx2tok
+                                                            0:'<blank>'
+                                                            1:'<unk>'
+                                                            2:'def'
+                                                            3:'reorder'
+                                                            4:'suite'
+                                                            5:'classes'
+                                                            6:'reverse'
+                                                            7:'False'
+                                                            8:'class'
+                                                            9:'count'
+                                                            10:'len'
+                                                            11:'type'
+                                                            12:'bins'
+                                                            13:'['
+                                                            14:'Ordered'
+                                                            15:'Set'
+                                                            16:'for'
+                                                            17:'i'
+                                                            18:'in'
+                                                            19:'range'
+                                                            20:'+'
+                                                            21:'1'}
+        , <SCTG.inputters.voca...faaabeb00>, <SCTG.inputters.voca...faaabeb38>, <SCTG.inputters.voca...faaabeb70>, <SCTG.inputters.voca...faaabeba8>, <SCTG.inputters.voca...faaabebe0>, <SCTG.inputters.voca...faaabec18>, <SCTG.inputters.voca...faaabec50>, <SCTG.inputters.voca...faaabec88>, ...], 
+        'summ_tokens':[['<s>', 'reorders', 'a', 'test', 'suite', 'by', 'test', 'type', '.', ...], ['<s>', 'returns', 'the', 'first', 'item', 'in', 'a', 'list', '.', ...], ['<s>', 'setup', 'the', 'rfxtrx', 'platform', '.', '</s>'], ['<s>', 'updates', 'the', 'probes', 'dictionary', 'with', 'different', 'levels', 'of', ...], ['<s>', 'test', 'creating', 'chart', 'data', 'source', 'from', 'array', 'of', ...], ['<s>', 'attach', 'votes', 'count', 'to', 'each', 'object', 'of', 'the', ...], ['<s>', 'add', 'locale', 'paths', 'to', 'settings', 'for', 'comprehensive', 'theming', ...], ['<s>', 'turn', 'auto-escape', 'on/off', 'based', 'on', 'the', 'file', 'type', ...], ['<s>', 'convert', 'path', 'to', 'a', 'local', 'filesystem', 'path', 'relative', ...], ['<s>', 'wrapper', 'function', 'to', 'search', 'one', 'dir', 'above', 'if', ...], ['<s>', 'open', 'a', 'resource', 'file', 'given', 'by', 'pathname', '.', ...], ['<s>', 'delete', 'a', 'policy', 'based', 'on', 'rabbitmqctl', 'clear_policy', '.', ...], ['<s>', 'get', 'rectangular', 'grid', '.', ...
+        'summ_text':['reorders a test suit...est type .', 'returns the first it...n a list .', 'setup the rfxtrx platform .', 'updates the probes d...t values .', 'test creating chart ...of dicts .', 'attach votes count t...queryset .', 'add locale paths to ... theming .', 'turn auto-escape on/...ile type .', 'convert path to a lo...e_folder .', 'wrapper function to ...ot exist .', 'open a resource file...pathname .', 'delete a policy base...r_policy .', 'get rectangular grid .', 'bottom the carving o...ode file .', ...]
+        'code_tokens':[['def', 'reorder', 'suite', 'suite', 'classes', 'reverse', 'False', 'class', 'count', ...], ['def', 'first', 'value', 'try', 'return', 'value[', '0', ']except', 'Index', ...], ['def', 'setup', 'platform', 'hass', 'config', 'add', 'devices', 'callback', 'discovery', ...], ['def', 'expand', 'probes', 'probes', 'defaults', 'expected', 'probes', '{}for', 'probe', ...], ['def', 'test', 'records', 'test', 'data', 'ds', 'Chart', 'Data', 'Source', ...], ['def', 'attach', 'total', 'voters', 'to', 'queryset', 'queryset', 'as', 'field', ...], ['def', 'add', 'theming', 'locales', 'theme', 'locale', 'paths', 'settings', 'COMPREHENSIVE', ...], ['def', 'guess', 'autoescape', 'template', 'name', 'if', 'template', 'name', 'is', ...], ['def', 'path', 'to', 'filesystem', 'root', '*paths', 'paths', '[sanitize', 'path', ...], ['def', 'open', 'filepath', '*args', '**kwargs', 'if', 'not', 'os', 'path', ...], ['def', 'open', 'pathname', 'pathname', 'verbose', '0', 'try', 'refno', 'Res', ...], ['def', 'delete', 'policy', 'vhost', 'n...
+        'code_text':['def reorder suite su...ered suite', 'def first value try ...'", 'def setup platform h...tch update', 'def expand probes pr...ted probes', 'def test records tes...ds index 4', 'def attach total vot... return qs', 'def add theming loca...ocale path', 'def guess autoescape... 'xml']", 'def path to filesyst... safe path', 'def open filepath *a...s **kwargs', 'def open pathname pa...' 1", 'def delete policy vh... Deleted'", 'def get Rectangular ... grid Path', 'def write Output fil...ewer value', ...]
+        'tgt_seq':tensor([[ 1963, 26863,  5948,  ...,     0,     0,     0],
+                          [ 1963, 18850, 12937,  ...,     0,     0,     0],
+                          [ 1963, 15158, 12937,  ...,     0,     0,     0],
+                          ...,
+                          [ 1963, 10042, 12937,  ...,     0,     0,     0],
+                          [ 1963,  5113, 11160,  ...,     0,     0,     0],
+                          [ 1963,   121, 18888,  ...,     0,     0,     0]])
+        'summ_len':tensor([10, 10,  7, 13, 12, 12, 11, 11, 13, 16, 10, 10,  6, 10, 14, 10, 14, 12,
+                           13, 11,  6,  7, 21,  6, 13,  7, 30, 16, 16, 18, 10,  6,  9, 12, 10,  7,
+                           7, 12, 10, 12, 11, 15, 17, 12, 14, 14, 17,  5,  8, 14, 10, 40, 10, 16,
+                           8,  5,  8,  7, 12, 10,  8, 12,  9,  8])
+        'summ_char_rep':None
+        'summ_word_rep':tensor([[ 1963, 26863,  5948,  ...,     0,     0,     0],
+                                [ 1963, 18850, 12937,  ...,     0,     0,     0],
+                                [ 1963, 15158, 12937,  ...,     0,     0,     0],
+                                ...,
+                                [ 1963, 10042, 12937,  ...,     0,     0,     0],
+                                [ 1963,  5113, 11160,  ...,     0,     0,     0],
+                                [ 1963,   121, 18888,  ...,     0,     0,     0]])
+        'code_len':tensor([ 56,  12,  97,  92,  25,  82,  26,  32,  54,  24,  42,  54,  67, 100,
+                            68,  47,  79,   9,  49,  19,  44,  15,  20,   8,  77,  38, 100,  95,
+                            17,  38,  37,   8,  57,  13, 115,  66, 104,  17,  36,  37, 120,  43,
+                            29,  30,  48,  71,  68,  65,  91,  51,  26,  53,  35,  22,  31,   6,
+                            50,  30,   9,  30,  50,  50,  94,  57])
+        'code_mask_rep':None
+        'code_type_rep':None
+        'code_char_rep':None
+        'code_word_rep':tensor([[18094, 36686, 24466,  ...,     0,     0,     0],
+                                [18094, 14244,  1097,  ...,     0,     0,     0],
+                                [18094, 25323,   490,  ...,     0,     0,     0],
+                                ...,
+                                [20124, 16238,  7504,  ...,     0,     0,     0],
+                                [18094, 31148, 35850,  ...,     0,     0,     0],
+                                [38863, 38094, 27812,  ...,     0,     0,     0]])
+        'batch_size':64
+        'language':[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...]
+        """
+        if replace_unk:
+            for i in range(len(predictions)):
+                enc_dec_attn = decoder_out['attentions'][i]
+                if self.args.model_type == 'transformer':
+                    assert enc_dec_attn.dim() == 3
+                    enc_dec_attn = enc_dec_attn.mean(1)
+                predictions[i] = replace_unknown(predictions[i], 
+                                                 enc_dec_attn, 
+                                                 src_raw=example['code_tokens'][i])
+                if self.args.uncase:
+                    predictions[i] = predictions[i].lower()
+
+        targets = [summ for summ in example['summ_text']]
+        return predictions, targets, decoder_out['copy_info']
 
     ####Save&Loading####
     def save(self, filename):
-        return 0
+        if self.parallel:
+            network = self.network.module
+        else:
+            network = self.network
+        state_dict = copy.copy(network.state_dict()) # Shallow copy - 아이템 수정(별도) 아이템 추가(같이 변경)
+        if 'fixed_embedding' in state_dict:
+            state_dict.pop('fixed_embedding')
+        params = {
+            'state_dict': state_dict,
+            'src_dict': self.src_dict,
+            'tgt_dict': self.tgt_dict,
+            'args': self.args,
+        }
+        try:
+            torch.save(params, filename)
+        except BaseException:
+            logger.warning("Warning: Saviing failed.. continuing anyway...")
 
     def checkpoint(self, filename, epoch):
-        return 0
+        if self.parallel:
+            network = self.network.module
+        else:
+            network = self.network
+        params = {
+            'state_dict': network.state_dict(),
+            'src_dict': self.src_dict,
+            'tgt_dict': self.tgt_dict,
+            'args': self.args,
+            'epoch': epoch,
+            'updates': self.updates,
+            'optimizer': self.optimizer.state_dict()
+        }
+        try:
+            torch.save(params, filename)
+        except BaseException:
+            logger.warning('Warning: Saving failed, continuing anyway...')
     
     @staticmethod
     def load(filename, new_args=None):
-        return 0
+        logger.info('Loading model %s' % filename)
+        """
+        x = lambda a : a + 10 간단한 함수 만들기.
+        print(x(5))
+        """
+        saved_params = torch.load(
+            filename, map_location=lambda storage, loc: storage
+        )
+        src_dict = saved_params['src_dict']
+        tgt_dict = saved_params['tgt_dict']
+        state_dict = saved_params['state_dict']
+        args = saved_params['args']
+
+        if new_args:
+            args = override_model_args(args, new_args)
+        
+        return SourceCodeTextGeneration(args, src_dict, tgt_dict, state_dict)
+        
 
     @staticmethod
     def load_checkpoint(filename, use_gpu=True):
-        return 0
+        logger.info('Loading model %s' % filename)
+        
+        saved_params = torch.load(
+            filename, map_location=lambda storage, loc: storage
+        )
+        src_dict = saved_params['src_dict']
+        tgt_dict = saved_params['tgt_dict']
+        state_dict = saved_params['state_dict']
+        epoch = saved_params['epoch']
+        updates = saved_params['updates']
+        optimizer = saved_params['args']
+        args = saved_params['args']
+        model = SourceCodeTextGeneration(args, src_dict, tgt_dict, state_dict)
+        model.updates = updates
+        model.init_optimizer(optimizer, use_gpu)
+
+        return model, epoch
     
     ####Runtime####
     def cuda(self):
