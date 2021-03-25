@@ -24,7 +24,7 @@ import SCTG.inputters.dataset as data
 import SCTG.inputters.vector as vector
 from SCTG.inputters.timer import AverageMeter, Timer
 
-from model import SourceCodeTextGeneration
+from model_tmp import SourceCodeTextGeneration
 
 from SCTG.eval.bleu.google_bleu import corpus_bleu
 from SCTG.eval.rouge.rouge import Rouge
@@ -351,9 +351,9 @@ def validate_official(args, data_loader, model, global_stats, mode='valid'):
             # predictions is list of sentences model predicted
             predictions, targets, copy_info = model.predict(example, replace_unk=True)
 
-            src_sequences = [code for code in example['code_test']]
+            src_sequences = [code for code in example['code_text']]
 
-            example += batch_size
+            examples += batch_size
 
             # [model prediction], [answer], [test set] 
             for i, src, pred, tgt in zip(example_index, src_sequences, predictions, targets):
